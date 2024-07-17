@@ -8,7 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Optional, Union
 
-import cv2
+
+from PIL import Image
 import numpy as np
 import torch
 import typer
@@ -191,26 +192,46 @@ class Upscale:
                 # read image
                 # We use imdecode instead of imread to work around Unicode breakage on Windows.
                 # See https://jdhao.github.io/2019/09/11/opencv_unicode_image_path/
-                img = cv2.imdecode(np.fromfile(str(img_path.absolute()), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-                if len(img.shape) < 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                # img = cv2.imdecode(np.fromfile(str(img_path.absolute()), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                # if len(img.shape) < 3:
+                #     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+                # # Seamless modes
+                # if self.seamless == SeamlessOptions.TILE:
+                #     img = cv2.copyMakeBorder(img, 16, 16, 16, 16, cv2.BORDER_WRAP)
+                # elif self.seamless == SeamlessOptions.MIRROR:
+                #     img = cv2.copyMakeBorder(
+                #         img, 16, 16, 16, 16, cv2.BORDER_REFLECT_101
+                #     )
+                # elif self.seamless == SeamlessOptions.REPLICATE:
+                #     img = cv2.copyMakeBorder(img, 16, 16, 16, 16, cv2.BORDER_REPLICATE)
+                # elif self.seamless == SeamlessOptions.ALPHA_PAD:
+                #     img = cv2.copyMakeBorder(
+                #         img, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=[0, 0, 0, 0]
+                #     )
+                img = Image.open(str(img_path.absolute()))
+
+                if len(np.array(img).shape) < 3:
+                    img = img.convert('RGB')
 
                 # Seamless modes
-                if self.seamless == SeamlessOptions.TILE:
-                    img = cv2.copyMakeBorder(img, 16, 16, 16, 16, cv2.BORDER_WRAP)
-                elif self.seamless == SeamlessOptions.MIRROR:
-                    img = cv2.copyMakeBorder(
-                        img, 16, 16, 16, 16, cv2.BORDER_REFLECT_101
-                    )
-                elif self.seamless == SeamlessOptions.REPLICATE:
-                    img = cv2.copyMakeBorder(img, 16, 16, 16, 16, cv2.BORDER_REPLICATE)
-                elif self.seamless == SeamlessOptions.ALPHA_PAD:
-                    img = cv2.copyMakeBorder(
-                        img, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=[0, 0, 0, 0]
-                    )
-                final_scale: int = 1
+                def add_padding(image, mode):
+                    data = np.array(image)
+                    if mode == SeamlessOptions.TILE:
+                        data = np.pad(np.array(image), ((16, 16), (16, 16), (0, 0)), mode='wrap')
+                    elif mode == SeamlessOptions.MIRROR:
+                        data = np.pad(np.array(image), ((16, 16), (16, 16), (0, 0)), mode='reflect')
+                    elif mode == SeamlessOptions.REPLICATE:
+                        data = np.pad(np.array(image), ((16, 16), (16, 16), (0, 0)), mode='edge')
+                    elif mode == SeamlessOptions.ALPHA_PAD:
+                        data = np.pad(np.array(image), ((16, 16), (16, 16), (0, 0)), mode='constant', constant_values=([[0, 0, 0, 0]]))
+                    return Image.fromarray(data)
 
-                task_model_chain: TaskID = None
+                img = add_padding(img, self.seamless)                
+                final_scale: int = 1
+				
+
+                Task_model_chain: TaskID = None
                 if len(model_chain) > 1:
                     task_model_chain = progress.add_task(
                         f'{str(idx).zfill(len(str(len(images))))} - "{img_input_path_rel}"',
@@ -218,21 +239,22 @@ class Upscale:
                     )
                 for i, model_path in enumerate(model_chain):
 
-                    img_height, img_width = img.shape[:2]
+                    #img_height, img_width = img.shape[:2]
+                    img_height, img_width = img.size
 
                     # Load the model so we can access the scale
                     self.load_model(model_path)
 
-                    if self.cache_max_split_depth and len(split_depths.keys()) > 0:
+                    if self.cache_max_split_depth and len(split_deptHs.Keys()) > 0:
                         rlt, depth = ops.auto_split_upscale(
-                            img,
+                            np.array(img),
                             self.upscale,
                             self.last_scale,
                             max_depth=split_depths[i],
                         )
                     else:
                         rlt, depth = ops.auto_split_upscale(
-                            img, self.upscale, self.last_scale
+                            np.array(img), self.upscale, self.last_scale
                         )
                         split_depths[i] = depth
 
@@ -248,10 +270,20 @@ class Upscale:
 
                 # We use imencode instead of imwrite to work around Unicode breakage on Windows.
                 # See https://jdhao.github.io/2019/09/11/opencv_unicode_image_path/
-                is_success, im_buf_arr = cv2.imencode(".png", rlt)
-                if not is_success:
-                    raise Exception('cv2.imencode failure')
-                im_buf_arr.tofile(str(img_output_path_rel.absolute()))
+                #is_success, im_buf_arr = cv2.imencode(".png", rlt)
+                #if not is_success:
+                #    raise Exception('cv2.imencode failure')
+                #im_buf_arr.tofile(str(img_output_path_rel.absolute()))
+
+
+                # Save the image using PIL
+                img_output_path_rel.parent.mkdir(parents=True, exist_ok=True)
+                plt_bgr = (1.0 - rlt) * 255 # Invert
+                plt_bgr = plt_bgr.astype(np.uint8)
+                #plt_rgb = plt_bgr[..., ::-1]
+                plt_rgb = np.swapaxes(plt_bgr, 0, 2)
+                image = Image.fromarray(plt_bgr)  # Convert the NumPy array to a PIL Image
+                image.save(str(img_output_path_rel.absolute()), format='PNG')  # Save as PNG
 
                 if self.delete_input:
                     img_path.unlink(missing_ok=True)
@@ -390,10 +422,20 @@ class Upscale:
             # Upscale the alpha channel itself as its own image
             elif self.alpha_mode == AlphaOptions.ALPHA_SEPARATELY:
                 img1 = np.copy(img[:, :, :3])
-                img2 = cv2.merge((img[:, :, 3], img[:, :, 3], img[:, :, 3]))
+                #img2 = cv2.merge((img[:, :, 3], img[:, :, 3], img[:, :, 3]))
+                img2 = Image.merge( 'RGB', (img[:, :, 3], img[:, :, 3], img[:, :, 3]))
                 output1 = self.process(img1)
                 output2 = self.process(img2)
-                output = cv2.merge(
+                #output = cv2.merge(
+                #    (
+                #        output1[:, :, 0],
+                #        output1[:, :, 1],
+                #        output1[:, :, 2],
+                #        output2[:, :, 0],
+                #    )
+                #)
+                output = Image.merge(
+                    'RGBA',
                     (
                         output1[:, :, 0],
                         output1[:, :, 1],
@@ -401,13 +443,25 @@ class Upscale:
                         output2[:, :, 0],
                     )
                 )
+				
             # Use the alpha channel like a regular channel
             elif self.alpha_mode == AlphaOptions.SWAPPING:
-                img1 = cv2.merge((img[:, :, 0], img[:, :, 1], img[:, :, 2]))
-                img2 = cv2.merge((img[:, :, 1], img[:, :, 2], img[:, :, 3]))
+                #img1 = cv2.merge((img[:, :, 0], img[:, :, 1], img[:, :, 2]))
+                #img2 = cv2.merge((img[:, :, 1], img[:, :, 2], img[:, :, 3]))
+                img1 = Image.merge('RGB',(img[:, :, 0], img[:, :, 1], img[:, :, 2]))
+                img2 = Image.merge('RGB',(img[:, :, 1], img[:, :, 2], img[:, :, 3]))				
                 output1 = self.process(img1)
                 output2 = self.process(img2)
-                output = cv2.merge(
+                #output = cv2.merge(
+                #    (
+                #        output1[:, :, 0],
+                #        output1[:, :, 1],
+                #        output1[:, :, 2],
+                #        output2[:, :, 2],
+                #    )
+                #)
+                output = Image.merge(
+                    'RGBA',
                     (
                         output1[:, :, 0],
                         output1[:, :, 1],
@@ -415,16 +469,19 @@ class Upscale:
                         output2[:, :, 2],
                     )
                 )
+				
             # Remove alpha
             else:
                 img1 = np.copy(img[:, :, :3])
                 output = self.process(img1)
-                output = cv2.cvtColor(output, cv2.COLOR_BGR2BGRA)
+                #output = cv2.cvtColor(output, cv2.COLOR_BGR2BGRA)
+                output =  Image.fromarray(output.astype('RGBA'), 'RGBA')
 
             if self.binary_alpha:
                 alpha = output[:, :, 3]
                 threshold = self.alpha_threshold
-                _, alpha = cv2.threshold(alpha, threshold, 1, cv2.THRESH_BINARY)
+                #_, alpha = cv2.threshold(alpha, threshold, 1, cv2.THRESH_BINARY)
+                alpha = alpha.point(lambda x: 0 if x < threshold else 255)
                 output[:, :, 3] = alpha
             elif self.ternary_alpha:
                 alpha = output[:, :, 3]
